@@ -1,0 +1,57 @@
+
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: rabbitmq-trigger-auth
+  namespace: messaging
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: rabbitmq-credentials
+      key: host
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: task-worker-scaler
+  namespace: messaging
+spec:
+  scaleTargetRef:
+    name: task-worker
+  pollingInterval: 15
+  cooldownPeriod: 60
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  fallback:
+    failureThreshold: 3
+    replicas: 2
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 3
+              periodSeconds: 30
+            - type: Percent
+              value: 100
+              periodSeconds: 30
+          selectPolicy: Max
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Pods
+              value: 2
+              periodSeconds: 60
+          selectPolicy: Min
+  triggers:
+    - type: rabbitmq
+      metadata:
+        protocol: amqp
+        queueName: tasks
+        mode: QueueLength
+        value: "5"
+      authenticationRef:
+        name: rabbitmq-trigger-auth
+

@@ -1,0 +1,3 @@
+keda-rabbitmq-project/k8s/secret/docker-secret.yaml    
+keda-rabbitmq-project/k8s/secret/rabbitmq-secret.yaml
+keda-rabbitmq-project/k8s/secret/postgres-secret.yaml

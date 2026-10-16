@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: load-generator
+  namespace: messaging
+spec:
+  restartPolicy: Never
+  imagePullSecrets:
+    - name: docker-rs
+  containers:
+    - name: producer
+      image: myregistry.com:5000/keda-rabbitmq-worker:1.0
+      imagePullPolicy: IfNotPresent
+      command:
+        - python
+        - -u
+        - -c
+        - |
+          import os
+          import time
+          import pika
+
+          credentials = pika.PlainCredentials(
+              os.environ["RABBITMQ_USER"],
+              os.environ["RABBITMQ_PASSWORD"]
+          )
+
+          params = pika.ConnectionParameters(
+              host="rabbitmq.messaging.svc.cluster.local",
+              port=5672,
+              credentials=credentials,
+              heartbeat=60,
+              blocked_connection_timeout=30
+          )
+
+          connection = pika.BlockingConnection(params)
+          channel = connection.channel()
+          channel.queue_declare(queue="tasks", durable=True)
+
+          def publish_message(job_id):
+              if job_id % 10 == 0:
+                  message = f"FAIL-job-{job_id}"
+              else:
+                  message = f"job-{job_id}"
+
+              channel.basic_publish(
+                  exchange="",
+                  routing_key="tasks",
+                  body=message.encode(),
+                  properties=pika.BasicProperties(delivery_mode=2)
+              )
+
+              print(
+                  f"Published {message} at {time.strftime('%H:%M:%S')}"
+              )
+
+          job_id = 1
+
+          try:
+              phases = [
+                  ("NORMAL", 3, 90),
+                  ("INCREASING", 2, 90),
+                  ("HEAVY", 1, 90),
+                  ("NORMAL", 3, 90),
+              ]
+
+              for phase_name, interval, duration in phases:
+                  print(f"Starting {phase_name} load for {duration} seconds")
+                  end_time = time.monotonic() + duration
+
+                  while time.monotonic() < end_time:
+                      publish_message(job_id)
+                      job_id += 1
+                      time.sleep(interval)
+
+              print(f"Load test complete. Published {job_id - 1} jobs.")
+
+          finally:
+              connection.close()
+      env:
+        - name: RABBITMQ_USER
+          valueFrom:
+            secretKeyRef:
+              name: rabbitmq-credentials
+              key: username
+        - name: RABBITMQ_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: rabbitmq-credentials
+              key: password

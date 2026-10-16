@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: task-worker-metrics
+  namespace: messaging
+  labels:
+    app.kubernetes.io/name: task-worker
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: task-worker
+  ports:
+    - name: metrics
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
+
