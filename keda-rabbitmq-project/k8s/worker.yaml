@@ -27,7 +27,7 @@ spec:
         - name: docker-rs
       containers:
         - name: worker
-          image: myregistry.com:5000/keda-rabbitmq-worker:2.0 
+          image: myregistry.com:5000/keda-rabbitmq-worker:2.5
           imagePullPolicy: IfNotPresent
           env:
             - name: RABBITMQ_HOST
@@ -44,6 +44,25 @@ spec:
                   key: password
             - name: QUEUE_NAME
               value: tasks
+            - name: DB_HOST
+              value: task-ledger-db.messaging.svc.cluster.local
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: task-ledger-db
+                  key: POSTGRES_DB
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: task-ledger-db
+                  key: POSTGRES_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: task-ledger-db
+                  key: POSTGRES_PASSWORD
           resources:
             requests:
               cpu: 100m

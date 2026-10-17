@@ -18,6 +18,7 @@ spec:
         - |
           import os
           import time
+          import json
           import pika
 
           credentials = pika.PlainCredentials(
@@ -28,6 +29,7 @@ spec:
           params = pika.ConnectionParameters(
               host="rabbitmq.messaging.svc.cluster.local",
               port=5672,
+              virtual_host="/",
               credentials=credentials,
               heartbeat=60,
               blocked_connection_timeout=30
@@ -37,22 +39,48 @@ spec:
           channel = connection.channel()
           channel.queue_declare(queue="tasks", durable=True)
 
-          def publish_message(job_id):
-              if job_id % 10 == 0:
-                  message = f"FAIL-job-{job_id}"
-              else:
-                  message = f"job-{job_id}"
+          # Wait for RabbitMQ to confirm each published message.
+          channel.confirm_delivery()
 
-              channel.basic_publish(
+          run_id = time.strftime("%Y%m%d%H%M%S")
+
+          def publish_message(job_id):
+              task_id = f"load-test-{run_id}-{job_id:06d}"
+
+              if job_id % 10 == 0:
+                  task = f"FAIL-job-{job_id}"
+              else:
+                  task = f"job-{job_id}"
+
+              message = {
+                  "task_id": task_id,
+                  "task": task
+              }
+
+              body = json.dumps(message).encode("utf-8")
+
+              confirmed = channel.basic_publish(
                   exchange="",
                   routing_key="tasks",
-                  body=message.encode(),
-                  properties=pika.BasicProperties(delivery_mode=2)
+                  body=body,
+                  properties=pika.BasicProperties(
+                      delivery_mode=2,
+                      content_type="application/json",
+                      message_id=task_id
+                  ),
+                  mandatory=True
               )
 
               print(
                   f"Published {message} at {time.strftime('%H:%M:%S')}"
               )
+              if confirmed:
+                  print(
+                      f"Confirmed task_id={task_id}, task={task}, "
+                      f"time={time.strftime('%H:%M:%S')}",
+                      flush=True
+                  )
+
 
           job_id = 1
 
@@ -65,7 +93,12 @@ spec:
               ]
 
               for phase_name, interval, duration in phases:
-                  print(f"Starting {phase_name} load for {duration} seconds")
+                  print(
+                      f"Starting {phase_name} load: "
+                      f"interval={interval}s, duration={duration}s",
+                      flush=True
+                  )
+
                   end_time = time.monotonic() + duration
 
                   while time.monotonic() < end_time:
@@ -73,10 +106,15 @@ spec:
                       job_id += 1
                       time.sleep(interval)
 
-              print(f"Load test complete. Published {job_id - 1} jobs.")
+              print(
+                  f"Load test complete. Published {job_id - 1} jobs.",
+                  flush=True
+              )
 
           finally:
-              connection.close()
+              if connection.is_open:
+                  connection.close()
+
       env:
         - name: RABBITMQ_USER
           valueFrom:

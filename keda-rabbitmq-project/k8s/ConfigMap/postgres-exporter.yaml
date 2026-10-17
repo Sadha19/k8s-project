@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: task-ledger-exporter-queries
+  namespace: messaging
+data:
+  queries.yaml: |
+    task_ledger_counts:
+      query: |
+        SELECT
+          COUNT(*)::bigint AS received,
+          COUNT(*) FILTER (WHERE status = 'processed')::bigint AS processed,
+          COUNT(*) FILTER (WHERE status = 'failed')::bigint AS failed,
+          COUNT(*) FILTER (WHERE status = 'received')::bigint AS pending
+        FROM task_ledger;
+      metrics:
+        - received:
+            usage: "GAUGE"
+            description: "Unique tasks recorded in the PostgreSQL task ledger"
+        - processed:
+            usage: "GAUGE"
+            description: "Tasks recorded as successfully processed"
+        - failed:
+            usage: "GAUGE"
+            description: "Tasks recorded as failed"
+        - pending:
+            usage: "GAUGE"
+            description: "Tasks awaiting completion"

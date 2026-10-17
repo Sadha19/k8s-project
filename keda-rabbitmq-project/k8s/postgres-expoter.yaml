@@ -1,0 +1,82 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: task-ledger-exporter
+  namespace: messaging
+  labels:
+    app: task-ledger-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: task-ledger-exporter
+  template:
+    metadata:
+      labels:
+        app: task-ledger-exporter
+    spec:
+      containers:
+        - name: postgres-exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+          args:
+            - "--extend.query-path=/etc/postgres_exporter/queries.yaml"
+          ports:
+            - name: metrics
+              containerPort: 9187
+          env:
+            - name: DATA_SOURCE_URI
+              value: "task-ledger-db.messaging.svc.cluster.local:5432/taskledger?sslmode=disable"
+            - name: DATA_SOURCE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: task-ledger-db
+                  key: POSTGRES_USER
+            - name: DATA_SOURCE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: task-ledger-db
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: queries
+              mountPath: /etc/postgres_exporter
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: queries
+          configMap:
+            name: task-ledger-exporter-queries
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: task-ledger-exporter
+  namespace: messaging
+  labels:
+    app: task-ledger-exporter
+spec:
+  selector:
+    app: task-ledger-exporter
+  ports:
+    - name: metrics
+      port: 9187
+      targetPort: metrics
