@@ -1,0 +1,20 @@
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: email-notification-test
+  namespace: messaging
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: email-notification-test
+      rules:
+        - alert: EmailNotificationTest
+          expr: vector(1)
+          labels:
+            severity: warning
+            namespace: messaging
+          annotations:
+            summary: "Kubernetes email notification test"
+            description: "Test alert to verify Gmail delivery from Alertmanager."

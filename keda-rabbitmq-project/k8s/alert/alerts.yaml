@@ -1,0 +1,71 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: phase3-messaging-alerts
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: messaging.reliability
+      interval: 30s
+      rules:
+        - alert: RabbitMQHighQueueBacklog
+          expr: rabbitmq_queue_messages_ready > 100
+          for: 5m
+          labels:
+            severity: warning
+            component: rabbitmq
+          annotations:
+            summary: "RabbitMQ queue backlog is high"
+            description: "A RabbitMQ queue has more than 100 ready messages for 5 minutes. Check worker capacity and processing health."
+
+        - alert: RabbitMQMessagesUnacknowledged
+          expr: rabbitmq_queue_messages_unacked > 50
+          for: 5m
+          labels:
+            severity: warning
+            component: rabbitmq
+          annotations:
+            summary: "Too many RabbitMQ messages are unacknowledged"
+            description: "More than 50 messages have remained unacknowledged for 5 minutes. Check worker health and processing latency."
+
+        - alert: TaskWorkerUnavailable
+          expr: kube_deployment_status_replicas_available{namespace="messaging", deployment="task-worker"} < 1
+          for: 2m
+          labels:
+            severity: critical
+            component: task-worker
+          annotations:
+            summary: "No task-worker replicas are available"
+            description: "The task-worker Deployment has no available replicas for 2 minutes. Check Pods, events, and application logs."
+
+        - alert: TaskWorkerProcessingFailures
+          expr: sum(increase(worker_messages_failed_total{namespace="messaging"}[5m])) >= 5
+          for: 1m
+          labels:
+            severity: warning
+            component: task-worker
+          annotations:
+            summary: "Task-worker processing failures detected"
+            description: "At least 5 processing failures occurred in the last 5 minutes. Inspect worker logs and failed-task records."
+
+        - alert: TaskWorkerReplicasAboveFive
+          expr: kube_deployment_spec_replicas{namespace="messaging", deployment="task-worker"} > 4
+          for: 1m
+          labels:
+            severity: warning
+            component: task-worker
+          annotations:
+            summary: "Task workers scaled above 4 replicas"
+            description: "The task-worker Deployment has more than 4 desired replicas for 2 minutes. Check RabbitMQ backlog and workload volume."
+
+        - alert: TaskWorkerAtMaximumReplicas
+          expr: kube_deployment_spec_replicas{namespace="messaging", deployment="task-worker"} >= 10
+          for: 5m
+          labels:
+            severity: critical
+            component: task-worker
+          annotations:
+            summary: "Task workers reached the maximum replica limit"
+            description: "The task-worker Deployment has reached 10 desired replicas for 5 minutes. KEDA may be unable to add more workers if the backlog continues growing."

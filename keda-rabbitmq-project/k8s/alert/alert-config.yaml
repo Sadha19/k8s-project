@@ -1,0 +1,32 @@
+
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: messaging-email-alerts
+  namespace: messaging
+  labels:
+    alertmanagerConfig: messaging-email
+spec:
+  route:
+    receiver: gmail-email
+    groupBy:
+      - alertname
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+    matchers:
+      - name: severity
+        matchType: =~
+        value: "warning|critical"
+  receivers:
+    - name: gmail-email
+      emailConfigs:
+        - to: "example@gmail.com"
+          from: "example@gmail.com@gmail.com"
+          smarthost: smtp.gmail.com:587
+          authUsername: "example@gmail.com@gmail.com"
+          authPassword:
+            name: gmail-smtp-credentials
+            key: password
+          requireTLS: true
+          sendResolved: true
