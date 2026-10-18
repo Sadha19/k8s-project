@@ -1,356 +1,257 @@
-# KEDA-Based RabbitMQ Autoscaling on Kubernetes
+# 🚀 Kubernetes Event-Driven Autoscaling with KEDA & RabbitMQ
 
-A hands-on Kubernetes project that demonstrates **event-driven autoscaling** with **KEDA**, **RabbitMQ**, **Prometheus**, and **Grafana**. A load generator publishes tasks to a RabbitMQ queue, and KEDA scales a pool of Python worker pods based on how many messages are waiting, not on CPU or memory.
+![Kubernetes](https://img.shields.io/badge/Kubernetes-Orchestration-326CE5?logo=kubernetes&logoColor=white)
+![KEDA](https://img.shields.io/badge/KEDA-Event--Driven%20Autoscaling-00A98F)
+![RabbitMQ](https://img.shields.io/badge/RabbitMQ-Message%20Queue-FF6600?logo=rabbitmq&logoColor=white)
+![DevOps](https://img.shields.io/badge/Focus-SRE%20%7C%20DevOps-blue)
 
-## Why Queue-Based Autoscaling?
+## 📌 Project Overview
 
-CPU-based autoscaling reacts after workers are already busy. For background job processing, the real signal is the backlog: if 500 jobs are waiting, you need more workers now, even if the current pods look idle. KEDA reads the RabbitMQ queue length and feeds that number into the Kubernetes Horizontal Pod Autoscaler (HPA), which then adjusts the replica count.
+This project explores **event-driven autoscaling in Kubernetes using KEDA (Kubernetes Event-Driven Autoscaling) and RabbitMQ**.
 
-## Architecture
+In traditional autoscaling, workloads are commonly scaled based on CPU and memory utilization. However, asynchronous applications often experience demand spikes based on the number of messages waiting in a queue.
+
+This project demonstrates how KEDA can use RabbitMQ queue metrics to trigger Kubernetes workload scaling, helping applications respond to changing workloads while avoiding unnecessary idle replicas.
+
+**Goal:** Understand and implement queue-based autoscaling while developing practical skills relevant to Site Reliability Engineering (SRE), cloud-native infrastructure, and Kubernetes operations.
+
+## 🏗️ Architecture
 
 ```mermaid
 flowchart TD
-    A[Load Generator Pod] -->|Publish jobs| B[RabbitMQ 'tasks' queue]
-    B -->|Queue length| C[KEDA Operator]
-    C -->|Metrics for scaling| D[Horizontal Pod Autoscaler]
-    D -->|Set replicas| E[task-worker Deployment]
-    E -->|Consume and ack| B
-    E -->|/metrics on :8000| F[Prometheus]
-    B -->|/metrics on :15692| F
-    F --> G[Grafana]
+    A[Message Producer] --> B[RabbitMQ Queue]
+    B --> C[KEDA RabbitMQ Scaler]
+    C --> D[ScaledObject]
+    D --> E[Kubernetes HPA]
+    E --> F[Consumer Deployment]
+    F --> B
 ```
 
-### Components
+### How it works
 
-| Component | Kubernetes object | Role |
-|---|---|---|
-| Load generator | `Pod` (`load-generator`) | Publishes jobs to the `tasks` queue in four load phases |
-| RabbitMQ | `Deployment`, `Service`, `PVC` (`rabbitmq`) | Stores jobs durably and delivers them to workers |
-| Worker | `Deployment` (`task-worker`) | Consumes jobs, simulates 5 seconds of work per job, exposes metrics |
-| KEDA `ScaledObject` | `task-worker-scaler` | Watches the queue and drives the HPA for `task-worker` |
-| KEDA `TriggerAuthentication` | `rabbitmq-trigger-auth` | Gives KEDA the RabbitMQ connection string from a Secret |
-| Metrics Service | `task-worker-metrics` | Exposes worker port 8000 for Prometheus |
-| ServiceMonitors | `rabbitmq`, `task-worker` (in `monitoring`) | Tell Prometheus which endpoints to scrape |
+1. **Producer:** Publishes messages to a RabbitMQ queue.
+2. **RabbitMQ:** Buffers incoming messages until consumers process them.
+3. **KEDA:** Monitors the configured RabbitMQ queue metric.
+4. **ScaledObject:** Defines the target workload and scaling trigger.
+5. **Kubernetes HPA:** Adjusts the number of consumer replicas using the scaling metrics provided through KEDA.
+6. **Consumer Deployment:** Processes queued messages as replicas scale up or down.
 
-## How It Works
+When the queue grows, the configured scaling policy can increase the number of consumers. When demand decreases, replicas can scale down to the configured minimum, potentially zero.
 
-1. The **load generator** publishes messages (`job-1`, `job-2`, ...) to the durable `tasks` queue through the default exchange.
-2. **RabbitMQ** holds the messages until a worker acknowledges them.
-3. **KEDA** polls the queue every 15 seconds using its RabbitMQ scaler, in `QueueLength` mode with a target of 5 messages per replica.
-4. KEDA converts the queue length into a desired replica count and creates or updates an HPA for the `task-worker` Deployment.
-5. The **HPA** scales `task-worker` between `minReplicaCount: 1` and `maxReplicaCount: 10`.
-6. Each **worker** takes one message at a time (`prefetch_count=1`), processes it, and sends a manual `ack`. On failure it sends a `nack` with requeue.
-7. The **worker** increments Prometheus counters for received, processed, and failed messages, and records processing time in a histogram.
-8. **Prometheus** scrapes the worker and RabbitMQ metrics. **Grafana** visualizes throughput, backlog, and replica count.
+## 🛠️ Technology Stack
 
-### Load Profile
+- **Kubernetes** — Container orchestration and workload management
+- **KEDA** — Event-driven autoscaling
+- **RabbitMQ** — Message broker and queue management
+- **kubectl** — Kubernetes resource inspection and troubleshooting
+- **Helm** — KEDA installation, if using the Helm-based setup
+- **YAML** — Kubernetes resource and autoscaling configuration
 
-The load generator runs four phases, each 90 seconds long:
+## ✨ Key Learning Areas
 
-| Phase | Publish interval | Approximate rate |
-|---|---|---|
-| NORMAL | 3 s | ~0.33 jobs/s |
-| INCREASING | 2 s | ~0.5 jobs/s |
-| HEAVY | 1 s | 1 job/s |
-| NORMAL | 3 s | ~0.33 jobs/s |
+- Event-driven autoscaling versus CPU-based autoscaling
+- Integrating RabbitMQ with Kubernetes workloads
+- Configuring KEDA `ScaledObject` resources and scaling triggers
+- Understanding the relationship between KEDA and Kubernetes HPA
+- Managing consumer replicas based on queue demand
+- Inspecting Kubernetes events, pods, deployments, and autoscaler status
+- Troubleshooting scaling configuration and queue-metric issues
+- Understanding workload efficiency and scaling trade-offs
 
-Each worker needs about 5 seconds per job, so one worker handles roughly 0.2 jobs/s. During the HEAVY phase the queue grows faster than one worker can drain it, and KEDA adds replicas. When the load drops and the backlog clears, the replica count falls back toward the minimum.
+## 📋 Prerequisites
 
-## Technology Stack
+Ensure you have the following installed and configured:
 
-| Technology | Purpose |
-|---|---|
-| Kubernetes | Container orchestration |
-| Minikube | Local single-node cluster |
-| KEDA | Event-driven autoscaling (ScaledObject, TriggerAuthentication) |
-| Kubernetes HPA | Applies the replica count that KEDA computes |
-| RabbitMQ 4.1 (management image) | Message broker and durable task queue |
-| Python 3.12, Pika 1.3.2 | Worker and load generator |
-| prometheus-client 0.23.1 | Custom worker metrics |
-| Docker | Packages the worker image |
-| kube-prometheus-stack | Prometheus Operator, Prometheus, Grafana |
+- A running Kubernetes cluster, such as Minikube, Kind, or a cloud Kubernetes cluster
+- `kubectl` configured to access the cluster
+- Helm, if installing KEDA through Helm
+- RabbitMQ deployment or a reachable RabbitMQ instance
+- Basic knowledge of Kubernetes Deployments, Services, and YAML
 
-## Repository Layout
+## 🚀 Getting Started
 
-```text
-keda-rabbitmq-project/
-├── README.md
-├── app/
-│   ├── worker.py                     # Consumer + Prometheus metrics
-│   └── Dockerfile                    # python:3.12-slim, non-root user 10001
-└── k8s/
-    ├── namespace.yaml                # 'messaging' namespace
-    ├── rabbitmq.yaml                 # PVC, RabbitMQ Deployment, Service
-    ├── rabbitmq-secret.yaml          # rabbitmq-credentials Secret
-    ├── docker-secret.yaml            # docker-rs image pull Secret
-    ├── worker.yaml                   # task-worker Deployment
-    ├── task-worker-service.yaml      # task-worker-metrics Service (port 8000)
-    ├── keda-autoscaling.yaml         # TriggerAuthentication, scaler Secret, ScaledObject
-    ├── load-generator.yaml           # Load generator Pod
-    ├── rabbitmq-servicemonitor.yaml  # Scrapes RabbitMQ (port 15692)
-    └── monitoring/
-        └── task-worker-servicemonitor.yaml  # Scrapes task-worker (port 8000)
-```
-
-## Prerequisites
-
-- Docker
-- Minikube and kubectl
-- Helm (for KEDA and kube-prometheus-stack)
-- A container registry reachable from the cluster nodes
-- Basic familiarity with Deployments, Services, Secrets, and YAML
-
-## Deployment Guide
-
-Run all commands from the `keda-rabbitmq-project` directory.
-
-### Step 1: Start the Cluster
+### 1. Clone the repository
 
 ```bash
-minikube start
+git clone https://github.com/Sadha19/k8s-project.git
+cd k8s-project/keda-rabbitmq-project
+```
+
+### 2. Verify Kubernetes access
+
+```bash
+kubectl cluster-info
 kubectl get nodes
 ```
 
-### Step 2: Install KEDA
+Confirm that the cluster is reachable and the nodes are ready.
 
-Follow the official guide at https://keda.sh/docs/latest/deploy/, then verify:
+### 3. Install KEDA
+
+If KEDA is not already installed and your project uses Helm:
+
+```bash
+helm repo add kedacore https://kedacore.github.io/charts
+helm repo update
+
+helm install keda kedacore/keda \
+  --namespace keda \
+  --create-namespace
+```
+
+Verify the installation:
 
 ```bash
 kubectl get pods -n keda
-kubectl get crd | grep keda
+kubectl get crd scaledobjects.keda.sh
 ```
 
-Confirm that the `ScaledObject` and `TriggerAuthentication` CRDs are listed.
+If KEDA is already installed, verify its status rather than installing another release.
 
-### Step 3: Install Monitoring (Optional but Recommended)
+### 4. Deploy the project resources
 
-Install `kube-prometheus-stack` into the `monitoring` namespace. The ServiceMonitors in this project use the label `release: monitoring`, so the Helm release must be named `monitoring`:
+Review the YAML files in the project directory and identify the manifests for RabbitMQ, the consumer application, its Service if required, and the KEDA `ScaledObject`.
+
+Apply the relevant manifests in dependency order:
 
 ```bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
-helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace
+kubectl apply -f <rabbitmq-manifest.yaml>
+kubectl apply -f <consumer-manifest.yaml>
+kubectl apply -f <scaledobject-manifest.yaml>
 ```
 
-### Step 4: Create the Namespace and Secrets
+Replace the example filenames with the actual filenames in this repository. Apply any required Secrets, ConfigMaps, and Services as well.
+
+### 5. Verify deployed resources
 
 ```bash
-kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/rabbitmq-secret.yaml
-kubectl apply -f k8s/docker-secret.yaml
+kubectl get pods -A
+kubectl get deployments
+kubectl get services
+kubectl get scaledobjects -A
+kubectl get hpa -A
 ```
 
-Supply real credentials through these Secrets or through your own secret-management process. Do not commit real passwords to the repository.
+Check that RabbitMQ is reachable, the consumer workload is healthy, and the KEDA scaling resource has been created successfully.
 
-### Step 5: Deploy RabbitMQ
+### 6. Observe autoscaling
+
+Monitor consumer replicas:
 
 ```bash
-kubectl apply -f k8s/rabbitmq.yaml
-kubectl apply -f k8s/rabbitmq-servicemonitor.yaml
-kubectl get pods -n messaging -w
+kubectl get deployments -w
 ```
 
-Wait until the `rabbitmq` pod is `Running` and `Ready`. RabbitMQ listens on `5672` (AMQP), `15672` (management UI), and `15692` (Prometheus metrics).
-
-### Step 6: Build and Push the Worker Image
+Monitor pods:
 
 ```bash
-docker build -t myregistry.com:5000/keda-rabbitmq-worker:2.0 app/
-docker push myregistry.com:5000/keda-rabbitmq-worker:2.0
+kubectl get pods -w
 ```
 
-The Kubernetes nodes must be able to pull from the registry. The `docker-rs` Secret provides the pull credentials.
-
-### Step 7: Deploy the Worker
+Inspect the autoscaler:
 
 ```bash
-kubectl apply -f k8s/worker.yaml
-kubectl apply -f k8s/task-worker-service.yaml
-kubectl apply -f k8s/monitoring/task-worker-servicemonitor.yaml
-kubectl get deployment task-worker -n messaging
-kubectl logs -n messaging deployment/task-worker
+kubectl describe scaledobject <scaledobject-name>
+kubectl describe hpa <hpa-name>
 ```
 
-The logs should show `Prometheus metrics available on port 8000` and `Worker ready; waiting for jobs`.
+Generate or publish messages using the producer or test procedure provided by the project. Observe whether the consumer replicas change according to the configured queue threshold and scaling limits.
 
-The worker reads these environment variables:
+After the queue drains, observe scale-down behavior. Scale-to-zero depends on the configured minimum replica count and the trigger configuration.
 
-| Variable | Source | Purpose |
-|---|---|---|
-| `RABBITMQ_HOST` | Literal in `worker.yaml` | `rabbitmq.messaging.svc.cluster.local` |
-| `RABBITMQ_USER` / `RABBITMQ_PASSWORD` | `rabbitmq-credentials` Secret | Broker login |
-| `QUEUE_NAME` | Literal in `worker.yaml` | `tasks` |
+## 🔍 Troubleshooting
 
-### Step 8: Enable KEDA Autoscaling
+| Issue | What to investigate |
+|---|---|
+| KEDA pods are not ready | Inspect KEDA pod logs, events, and installation status |
+| ScaledObject is not ready | Check its conditions, trigger configuration, and authentication |
+| Queue metrics are unavailable | Verify RabbitMQ connectivity, queue name, virtual host, and credentials |
+| Consumer pods are not scaling | Inspect KEDA logs, HPA status, queue depth, and scaling thresholds |
+| Consumer pods are failing | Inspect pod events, container logs, resource limits, and application configuration |
+| Replicas do not scale down | Check queue depth, minimum replicas, cooldown settings, and remaining workload activity |
+
+Useful commands:
 
 ```bash
-kubectl apply -f k8s/keda-autoscaling.yaml
-kubectl get scaledobject -n messaging
-kubectl get hpa -n messaging
+kubectl get events -A --sort-by=.lastTimestamp
+kubectl describe pods <pod-name>
+kubectl logs <pod-name>
+kubectl logs -n keda deployment/keda-operator
+kubectl describe scaledobject <scaledobject-name>
+kubectl get hpa -A
 ```
 
-This file creates three objects:
+Use the actual namespace and resource names from your cluster.
 
-- **`TriggerAuthentication` `rabbitmq-trigger-auth`** reads the `connection` key from a Secret and gives it to the RabbitMQ scaler as `host`.
-- **Secret `rabbitmq-scaler-connection`** holds an AMQP connection string (`amqp://<user>:<password>@rabbitmq.messaging.svc.cluster.local:5672/`).
-- **`ScaledObject` `task-worker-scaler`** targets the `task-worker` Deployment with these settings:
+## 📈 SRE Perspective
 
-| Setting | Value | Meaning |
-|---|---|---|
-| `pollingInterval` | 15 s | How often KEDA checks the queue |
-| `cooldownPeriod` | 60 s | Wait time before scaling down (applies to scale-to-zero) |
-| `minReplicaCount` / `maxReplicaCount` | 1 / 10 | Replica bounds |
-| `fallback` | 2 replicas after 3 failed checks | Keeps workers running if KEDA cannot read the queue |
-| `mode` / `value` | `QueueLength` / 5 | About one replica per 5 waiting messages |
-| `scaleUp` | Up to 3 pods or 100% every 30 s, whichever is larger | Fast reaction to bursts |
-| `scaleDown` | Up to 2 pods every 60 s after a 60 s stabilization window | Gradual reduction |
+This project provides hands-on practice with concepts that matter in reliable, scalable distributed systems.
 
-### Step 9: Generate Load and Watch Scaling
+**Reliability**
+- Inspect workload health and Kubernetes events.
+- Identify configuration and connectivity problems.
+- Understand how queue backlogs can affect application responsiveness.
 
-Open three terminals:
+**Scalability**
+- Use queue demand as an autoscaling signal.
+- Understand scale-up, scale-down, replica limits, and scaling thresholds.
+- Explore how asynchronous workloads respond to bursts of incoming traffic.
 
-```bash
-kubectl get pods -n messaging -w
-```
+**Operational efficiency**
+- Reduce unnecessary idle consumer replicas when the workload permits.
+- Understand the trade-offs between scaling latency, processing capacity, and resource usage.
 
-```bash
-kubectl get hpa -n messaging -w
-```
+**Observability and troubleshooting**
+- Use `kubectl` to inspect workload status, events, logs, and HPA conditions.
+- Identify where to investigate when scaling does not behave as expected.
 
-```bash
-kubectl logs -n messaging load-generator -f
-```
+## 🧪 Suggested Validation Scenarios
 
-Start the load generator:
+Use these scenarios to validate and document the project:
 
-```bash
-kubectl apply -f k8s/load-generator.yaml
-```
+1. **Baseline:** Confirm the consumer workload and RabbitMQ are healthy with an empty queue.
+2. **Traffic spike:** Publish a batch of messages and observe queue depth and consumer replica changes.
+3. **Queue drain:** Allow consumers to process messages and observe scale-down behavior.
+4. **Scaling limits:** Test the configured minimum and maximum replica counts.
+5. **Failure investigation:** Test a controlled configuration or connectivity failure in a non-production environment and document the observed symptoms and recovery steps.
 
-The load test takes about six minutes. Expect the worker replica count to rise during the INCREASING and HEAVY phases and fall after the queue drains. To run another test, delete the finished pod first:
+Record actual replica counts, queue depth, scaling latency, and recovery observations before claiming performance improvements.
 
-```bash
-kubectl delete pod load-generator -n messaging
-kubectl apply -f k8s/load-generator.yaml
-```
+## 🔐 Security Considerations
 
-<img width="446" height="251" alt="Screenshot 2026-10-15 153806" src="https://github.com/user-attachments/assets/b02f2899-b17e-47c5-8ae0-0c0fa0c5c8d4" />
-<img width="490" height="101" alt="Screenshot 2026-10-15 154004" src="https://github.com/user-attachments/assets/cf9cf7d3-1290-4e56-9c5f-479548f15f3c" />
-<img width="383" height="89" alt="Screenshot 2026-10-15 154029" src="https://github.com/user-attachments/assets/622343dd-680d-4f5b-b2fe-4cb6f96f3256" />
+- Store RabbitMQ credentials in Kubernetes Secrets or an appropriate external secrets manager.
+- Do not commit passwords, tokens, or production connection strings to GitHub.
+- Use least-privilege access for RabbitMQ and Kubernetes service accounts.
+- Apply appropriate network restrictions and TLS where required.
+- Use a non-production cluster for failure testing.
 
+## 🎯 Future Improvements
 
-### Step 10: Explore Metrics in Prometheus and Grafana
+- Add Prometheus metrics and Grafana dashboards.
+- Track queue depth, consumer replicas, processing rate, and message-processing latency.
+- Add alerting for sustained queue backlogs and unhealthy consumers.
+- Add automated deployment and validation through a CI/CD pipeline.
+- Test resilience during RabbitMQ or consumer failures.
+- Document measured scaling behavior and recovery objectives.
 
-Prometheus:
-
-```bash
-kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 9090:9090
-```
-
-Open http://localhost:9090.
-
-Grafana (find the service name first with `kubectl get svc -n monitoring`):
-
-```bash
-kubectl port-forward -n monitoring svc/<grafana-service-name> 3000:80
-```
-
-Open http://localhost:3000.
-
-## Metrics and Example PromQL
-
-The worker exposes these custom metrics on port 8000:
-
-| Metric | Type | Description |
-|---|---|---|
-| `worker_messages_received_total` | Counter | Messages delivered to the worker |
-| `worker_messages_processed_total` | Counter | Messages processed and acknowledged |
-| `worker_messages_failed_total` | Counter | Failed processing attempts |
-| `worker_message_processing_seconds` | Histogram | Time spent on each message |
-
-Example queries:
-
-```promql
-# Processing throughput over 5 minutes
-sum(rate(worker_messages_processed_total{namespace="messaging"}[5m]))
-
-# Failure rate
-sum(rate(worker_messages_failed_total[5m]))
-
-# 95th percentile processing time
-histogram_quantile(0.95, sum by (le) (rate(worker_message_processing_seconds_bucket[5m])))
-
-# Current worker replicas (requires kube-state-metrics)
-kube_deployment_status_replicas{namespace="messaging", deployment="task-worker"}
-```
-<img width="959" height="468" alt="image" src="https://github.com/user-attachments/assets/60d9a14f-0a04-4518-844e-52e8ca44ef10" />
-
-RabbitMQ queue depth comes from the RabbitMQ Prometheus plugin (port 15692). Metric names vary between RabbitMQ versions, so check the exact name in the Prometheus UI under **Graph** by searching for `rabbitmq_queue_messages`.
-
-**Note on counters:** Prometheus counters reset when a pod restarts or is replaced, so `sum(...)` over the counters is not an all-time total. For durable totals, the application would need to persist its counts to a database or another store.
-
-## Troubleshooting
-
-**KEDA objects are not recognized**
-Check that the KEDA CRDs exist (`kubectl get crd | grep keda`) and that the KEDA pods are running in the `keda` namespace.
-
-**Workers do not scale**
-```bash
-kubectl describe scaledobject task-worker-scaler -n messaging
-kubectl describe hpa -n messaging
-kubectl get events -n messaging --sort-by=.metadata.creationTimestamp
-```
-Look for authentication errors in the ScaledObject conditions. These usually mean the scaler connection string is wrong.
-
-**Worker crashes with a connection error**
-Check that `RABBITMQ_USER` and `RABBITMQ_PASSWORD` match the broker's credentials and that the connection string in `rabbitmq-scaler-connection` uses the same values. A password containing `@` must be URL-encoded (`%40`) inside an AMQP URL.
-
-**RabbitMQ keeps restarting**
-```bash
-kubectl describe pod -n messaging -l app.kubernetes.io/name=rabbitmq
-kubectl logs -n messaging -l app.kubernetes.io/name=rabbitmq --previous
-```
-Check the memory limit (512Mi) and the startup probe.
-
-**Prometheus does not show worker metrics**
-```bash
-kubectl get servicemonitors -A
-kubectl get endpoints task-worker-metrics -n messaging
-```
-Confirm that the ServiceMonitor's labels match the Prometheus `serviceMonitorSelector` (the `release: monitoring` label) and that the worker pod is reachable on port 8000.
-
-## Security Notes
-
-- Real credentials should never be stored in Git. Use Kubernetes Secrets created outside the repository, Sealed Secrets, External Secrets, or a similar tool.
-- The worker runs as a non-root user (UID 10001), with a read-only root filesystem, all Linux capabilities dropped, and privilege escalation disabled.
-- RabbitMQ is reachable only inside the cluster through a `ClusterIP` Service.
-
-## What I Learned
-
-- Building event-driven autoscaling with KEDA and the HPA.
-- Connecting RabbitMQ to Kubernetes worker deployments, including durable queues, prefetch limits, and manual acknowledgements.
-- Writing a containerized Python worker with Prometheus instrumentation.
-- Using Kubernetes Secrets, ServiceMonitors, and security contexts.
-- Troubleshooting scaling, queue processing, and monitoring on Minikube.
-
-## Future Improvements
-
-- Add retries with a dead-letter queue, and limit requeue loops for poison messages.
-- Make job processing idempotent.
-- Add alerts for backlog growth, failure rate, and worker unavailability.
-- Persist RabbitMQ data with automated recovery.
-- Add CI/CD to build, scan, and publish worker images.
-- Move the setup to a managed Kubernetes service.
-
-## References
+## 📚 References
 
 - [KEDA Documentation](https://keda.sh/docs/)
 - [KEDA RabbitMQ Queue Scaler](https://keda.sh/docs/latest/scalers/rabbitmq-queue/)
+- [Kubernetes Horizontal Pod Autoscaling](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)
 - [RabbitMQ Documentation](https://www.rabbitmq.com/docs)
-- [Prometheus Documentation](https://prometheus.io/docs/)
-- [Grafana Documentation](https://grafana.com/docs/)
-- [Minikube Documentation](https://minikube.sigs.k8s.io/docs/)
+
+## 👨‍💻 Author
+
+**Sadha Sivam**
+
+Aspiring Site Reliability Engineer | Kubernetes | Cloud & DevOps | Automation
+
+- GitHub: [Sadha19](https://github.com/Sadha19)
+- Project Repository: [KEDA RabbitMQ Autoscaling](https://github.com/Sadha19/k8s-project/tree/main/keda-rabbitmq-project)
 
 ---
 
-**Author:** [Sadha19](https://github.com/Sadha19)
+⭐ If you find this project useful, feel free to explore the repository and share your feedback.
+
+*Built as a hands-on learning project to strengthen my Kubernetes, autoscaling, troubleshooting, and SRE skills.*
