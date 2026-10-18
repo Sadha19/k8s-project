@@ -27,7 +27,7 @@ spec:
         - name: docker-rs
       containers:
         - name: worker
-          image: myregistry.com:5000/keda-rabbitmq-worker:2.5
+          image: myregistry.com:5000/keda-rabbitmq-worker:2.6
           imagePullPolicy: IfNotPresent
           env:
             - name: RABBITMQ_HOST

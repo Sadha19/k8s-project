@@ -4,6 +4,8 @@ import time
 import json
 import copy
 import logging
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pika
 from prometheus_client import Counter, Histogram, start_http_server
@@ -42,6 +44,84 @@ PROCESSING_TIME = Histogram(
     "worker_message_processing_seconds",
     "Time spent processing each message",
 )
+
+# Kubernetes health endpoints are served separately from Prometheus metrics.
+# Port 8000 remains dedicated to /metrics; port 8081 serves health checks.
+HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8081"))
+LIVENESS_STALE_SECONDS = int(os.getenv("LIVENESS_STALE_SECONDS", "120"))
+_health_lock = threading.Lock()
+_health_state = {
+    "startup_complete": False,
+    "ledger_ready": False,
+    "rabbitmq_ready": False,
+    "worker_alive": True,
+    "last_worker_heartbeat": time.monotonic(),
+}
+
+def set_health(**updates):
+    with _health_lock:
+        _health_state.update(updates)
+
+def get_health():
+    with _health_lock:
+        return dict(_health_state)
+
+def touch_worker_heartbeat():
+    with _health_lock:
+        _health_state["last_worker_heartbeat"] = time.monotonic()
+
+def worker_is_live(state):
+    return (
+        state["worker_alive"]
+        and time.monotonic() - state["last_worker_heartbeat"]
+        < LIVENESS_STALE_SECONDS
+    )
+
+class HealthHandler(BaseHTTPRequestHandler):
+    """Minimal HTTP endpoints for Kubernetes probes."""
+
+    def do_GET(self):
+        state = get_health()
+        if self.path == "/livez":
+            # Dependency outages should not trigger restart loops. The worker
+            # retries RabbitMQ/PostgreSQL connections in its main loop.
+            ok = worker_is_live(state)
+        elif self.path == "/startupz":
+            ok = state["startup_complete"]
+        elif self.path == "/readyz":
+            ok = (
+                state["startup_complete"]
+                and state["ledger_ready"]
+                and state["rabbitmq_ready"]
+            )
+        else:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"not found\n")
+            return
+
+        body = b"ok\n" if ok else b"not ready\n"
+        self.send_response(200 if ok else 503)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        # Avoid access-log noise from frequent Kubernetes probes.
+        return
+
+def start_health_server():
+    server = ThreadingHTTPServer(("0.0.0.0", HEALTH_PORT), HealthHandler)
+    thread = threading.Thread(
+        target=server.serve_forever,
+        name="health-http-server",
+        daemon=True,
+    )
+    thread.start()
+    log.info("Kubernetes health endpoints listening on port %s", HEALTH_PORT)
+    return server
+
 
 host = os.getenv(
     "RABBITMQ_HOST",
@@ -129,12 +209,21 @@ def declare_queues(channel):
 def main():
     start_http_server(8000)
     log.info("Prometheus metrics available on port 8000")
+    start_health_server()
+    # The process and its HTTP health handler have initialized. Dependency
+    # readiness is reported separately by /readyz.
+    set_health(
+        startup_complete=True,
+        worker_alive=True,
+        last_worker_heartbeat=time.monotonic(),
+    )
 
     # Do not consume messages until PostgreSQL is available.
     while True:
         try:
             initialize_schema()
             log.info("PostgreSQL task ledger is ready")
+            set_health(ledger_ready=True)
             break
         except Exception:
             log.exception(
@@ -144,6 +233,7 @@ def main():
 
     while True:
         connection = None
+        touch_worker_heartbeat()
 
         try:
             credentials = pika.PlainCredentials(
@@ -166,12 +256,23 @@ def main():
 
             channel = connection.channel()
 
+            # Refresh liveness from Pika's event loop. If the consumer loop
+            # stops making progress, /livez eventually returns HTTP 503.
+            def refresh_worker_heartbeat():
+                touch_worker_heartbeat()
+                if connection is not None and connection.is_open:
+                    connection.call_later(10, refresh_worker_heartbeat)
+
+            connection.call_later(10, refresh_worker_heartbeat)
+
             # Publisher confirms protect retry/DLQ handoffs.
             channel.confirm_delivery()
             declare_queues(channel)
+            set_health(rabbitmq_ready=True)
 
             def process_message(ch, method, properties, body):
                 started = time.perf_counter()
+                touch_worker_heartbeat()
                 task_id = None
 
                 MESSAGES_RECEIVED.inc()
@@ -389,12 +490,16 @@ def main():
             channel.start_consuming()
 
         except Exception:
+            set_health(rabbitmq_ready=False)
             log.exception(
                 "RabbitMQ connection or consumer failed"
             )
-            time.sleep(5)
+            for _ in range(5):
+                touch_worker_heartbeat()
+                time.sleep(1)
 
         finally:
+            set_health(rabbitmq_ready=False)
             if connection is not None and connection.is_open:
                 try:
                     connection.close()
