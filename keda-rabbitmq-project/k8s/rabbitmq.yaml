@@ -19,6 +19,7 @@ metadata:
   namespace: messaging
   labels:
     app.kubernetes.io/name: rabbitmq
+    app: rabbitmq
 spec:
   replicas: 1
   strategy:
