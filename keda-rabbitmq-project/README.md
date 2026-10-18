@@ -1,424 +1,391 @@
-Event-Driven Autoscaling and Failure Handling for a RabbitMQ Worker Pool on Kubernetes
-A reliability-focused reference build for a queue-driven worker system. KEDA scales workers on queue depth. Workers handle failures with bounded retries, a dead-letter queue, a durable PostgreSQL task ledger, and Kubernetes health probes. Prometheus and Alertmanager cover the signals an on-call engineer needs.
-
-The project runs on Minikube. It is built to demonstrate operational design: how the system behaves under load, how it fails, how it recovers, and how it reports its state.
-What this project demonstrates
-Area
-What is implemented
-Autoscaling
-KEDA ScaledObject drives the HPA from RabbitMQ queue length, with explicit scale-up and scale-down policies
-Delivery guarantees
-Durable queues, persistent messages, publisher confirms, manual acknowledgements, prefetch=1
-Failure handling
-Retry queue with TTL backoff, bounded retries (3), dead-letter queue for exhausted and malformed messages
-Idempotency
-PostgreSQL task ledger with a unique task_id. Completed tasks are acknowledged and skipped on redelivery
-Health management
-Startup, liveness, and readiness endpoints separate from dependency state
-Observability
-Prometheus metrics from the worker, RabbitMQ, and the ledger database. PrometheusRule alerts and Alertmanager email routing
-Security baseline
-Non-root containers, read-only root filesystem, dropped capabilities, seccomp RuntimeDefault, secrets kept out of Git
-
-Architecture
-flowchart LR
-
-    LG[Load generator] -->|publish JSON, confirmed| Q[(tasks queue)]
-
-    Q -->|deliver, prefetch=1| W[task-worker pods]
-
-    W -->|ack / retry / DLQ| Q
-
-    Q -->|expired after TTL| R[(tasks.retry queue)]
-
-    R -->|dead-letter back| Q
-
-    Q -->|retries exhausted or malformed| D[(tasks.dlq)]
-
-    W -->|record state| DB[(PostgreSQL task ledger)]
-
-    KEDA[KEDA ScaledObject] -->|queue length| Q
-
-    KEDA -->|desired replicas| HPA[HPA] --> W
-
-    W -->|/metrics :8000| P[Prometheus]
-
-    Q -->|/metrics :15692| P
-
-    DB -->|exporter :9187| P
-
-    P -->|alert rules| AM[Alertmanager] -->|email| OC[On-call]
-
-    P --> G[Grafana]
-Components
-Component
-Kubernetes object
-Responsibility
-Load generator
-Pod load-generator
-Publishes JSON tasks in four load phases. Every tenth task is a forced failure to exercise the retry path
-RabbitMQ
-Deployment rabbitmq, Service rabbitmq, PVC
-Durable work queue, retry queue, DLQ
-Worker
-Deployment task-worker
-Consumes tasks, records state, acknowledges, exposes metrics and health endpoints
-Task ledger
-StatefulSet task-ledger-db (PostgreSQL 16)
-Durable record of each task's state, attempt count, and error
-Ledger exporter
-Deployment task-ledger-exporter
-Exposes ledger counts as Prometheus gauges
-Autoscaler
-ScaledObject task-worker-scaler, TriggerAuthentication
-Scales workers from 1 to 10 replicas based on queue length
-Alerting
-PrometheusRule, AlertmanagerConfig
-Backlog, worker availability, failure rate, replica ceiling
-
-Message lifecycle
-Every task moves through a defined set of states. Each transition is persisted before the RabbitMQ message is acknowledged, so a crash at any point causes a redelivery and not a loss.
-
-Publish. The load generator sends a JSON body with task_id and task. The broker confirms the write before the publisher continues.
-Receive. The worker decodes the message. A body that is not a JSON object, or has no task_id, goes to the DLQ at once.
-Claim. claim_task inserts the task into the ledger, or returns False if the task is already processed or failed. A duplicate is acknowledged and skipped.
-Execute. The task handler runs. The simulation sleeps for 5 seconds and fails for any task beginning with FAIL.
-Success. The worker marks the task processed in the ledger, then acknowledges the message.
-Failure, retries remaining. The worker publishes a copy to tasks.retry with an incremented retry_count header, waits for broker confirmation, records the retry in the ledger, then acknowledges the original. The retry queue's 10-second TTL dead-letters the message back to tasks.
-Failure, retries exhausted. The worker publishes to tasks.dlq, marks the task failed in the ledger, then acknowledges the original.
-
-Failure point
-Behaviour
-Worker crashes mid-task
-Broker redelivers the unacknowledged message to another worker
-Ledger database unreachable
-Worker negatives the message with requeue and retries; no message is lost
-Broker rejects a publish
-Publisher confirms raise, the original is requeued
-Malformed JSON
-Sent to DLQ immediately, no retries
-Task succeeds but ack is lost
-Redelivery is detected by the ledger and acknowledged without running the task again
-Worker's own state write fails after publishing retry
-Original is requeued, which can produce one extra retry copy (see Known limitations)
-
-Health and probes
-The worker runs an HTTP server on port 8081 with four endpoints.
-
-Endpoint
-Meaning
-Failing it causes
-/startupz
-Process has started and the health server is up
-Startup probe waits before liveness begins
-/livez
-The consume loop has sent a heartbeat within LIVENESS_STALE_SECONDS (default 120)
-Pod restart. Deliberately ignores dependency outages, so a database outage does not cause a restart loop
-/readyz
-Ledger schema initialized and RabbitMQ connection active
-Pod removed from endpoints, no restart
-
-
-Probe configuration for k8s/worker.yaml:
-
-          ports:
-
-            - name: health
-
-              containerPort: 8081
-
-          startupProbe:
-
-            httpGet: { path: /startupz, port: health }
-
-            periodSeconds: 5
-
-            failureThreshold: 12
-
-          livenessProbe:
-
-            httpGet: { path: /livez, port: health }
-
-            periodSeconds: 20
-
-            failureThreshold: 3
-
-          readinessProbe:
-
-            httpGet: { path: /readyz, port: health }
-
-            periodSeconds: 10
-
-            failureThreshold: 3
-Autoscaling
-Setting
-Value
-Reasoning
-Trigger
-RabbitMQ QueueLength, target 5
-Roughly one replica per five waiting tasks
-pollingInterval
-15 s
-Balances reaction time against broker load
-minReplicaCount / maxReplicaCount
-1 / 10
-Caps cost and protects the database connection pool
-Scale-up
-Up to 3 pods or 100 % every 30 s, whichever is larger, no stabilization window
-Reacts quickly to bursts
-Scale-down
-Up to 2 pods every 60 s after a 60 s stabilization window
-Avoids flapping during bursty load
-fallback
-2 replicas after 3 failed polls
-Keeps a minimum capacity if KEDA cannot read the queue
-
-Observability
-Metrics
-Source
-Key metrics
-Worker (:8000)
-worker_messages_received_total, worker_messages_processed_total, worker_messages_failed_total, worker_message_processing_seconds (histogram)
-RabbitMQ (:15692)
-rabbitmq_queue_messages_ready, rabbitmq_queue_messages_unacked for tasks, tasks.retry, tasks.dlq
-Ledger exporter (:9187)
-task_ledger_counts_received, _processed, _failed, _pending
-kube-state-metrics
-kube_deployment_status_replicas_available, kube_deployment_spec_replicas for task-worker
-
-Alerts
-Alert
-Condition
-Severity
-First check
-RabbitMQHighQueueBacklog
-Ready messages > 100 for 5 min
-warning
-Replica count, worker logs, processing latency
-RabbitMQMessagesUnacknowledged
-Unacked > 50 for 5 min
-warning
-Worker health and stuck consumers
-TaskWorkerUnavailable
-No available replicas for 2 min
-critical
-Pod events, probe failures, DB and broker connectivity
-TaskWorkerProcessingFailures
-At least 5 failed attempts in 5 min
-warning
-Worker logs, retry and DLQ counts
-TaskWorkerReplicasAboveFive
-Desired replicas > 4
-warning
-Whether backlog is legitimate or a stuck consumer
-TaskWorkerAtMaximumReplicas
-Desired replicas ≥ 10 for 5 min
-critical
-KEDA may be unable to keep up. Check capacity and backlog growth
-
-
-Alertmanager sends warning and critical alerts by email through an AlertmanagerConfig in the messaging namespace, with resolved notifications enabled.
-Suggested SLIs
-SLI
-Definition
-Task success rate
-processed / received over 1 hour
-Queue latency
-Time from publish to ack. Approximated by backlog divided by throughput
-Availability
-Fraction of minutes with at least one ready worker
-Durability
-Tasks in the ledger with no terminal state after the backlog clears. Target: zero
-
-Deployment
-Run from the repository root. Namespace and secrets are set up first, because nothing in the manifests creates them.
-1. Cluster and operators
-minikube start
-
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-
-helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace
-
-# Install KEDA following https://keda.sh/docs/latest/deploy/
-
-The ServiceMonitors and PrometheusRules use the label release: monitoring, so the Helm release name must be monitoring.
-2. Namespace and secrets
-Secrets are not stored in this repository. Create them from the command line as described in k8s/secret/README.md. The required secrets are:
-
-Secret
-Keys
-Used by
-rabbitmq-credentials
-username, password, host
-RabbitMQ, worker, load generator, KEDA trigger
-task-ledger-db
-POSTGRES_DB (set to taskledger), POSTGRES_USER, POSTGRES_PASSWORD
-PostgreSQL, worker, exporter
-docker-rs
-Docker registry pull credentials
-Worker and load generator images
-gmail-smtp-credentials
-password (Gmail App Password)
-Alertmanager
-
-
-rabbitmq-credentials must include a host key with the AMQP URL, because the KEDA TriggerAuthentication reads that key. Passwords containing @ must be URL-encoded inside the URL.
-3. Data and messaging layer
-kubectl apply -f k8s/namespace.yaml
-
-kubectl apply -f k8s/rabbitmq.yaml
-
-kubectl apply -f k8s/monitoring/rabbitmq-servicemonitor.yaml
-
-kubectl apply -f k8s/postgres.yaml
-
-kubectl apply -f k8s/ConfigMap/postgres-exporter.yaml
-
-kubectl apply -f k8s/postgres-expoter.yaml
-
-kubectl apply -f k8s/monitoring/task-ledger.yaml
-
-Wait for rabbitmq-0 or the rabbitmq pod, and task-ledger-db-0, to report Ready.
-4. Workers and autoscaling
-kubectl apply -f k8s/worker.yaml
-
-kubectl apply -f k8s/task-worker-service.yaml
-
-kubectl apply -f k8s/monitoring/task-worker-servicemonitor.yaml
-
-kubectl apply -f k8s/keda-autoscaling.yaml
-5. Alerting
-kubectl apply -f k8s/alert/alert-config.yaml
-
-kubectl apply -f k8s/alert/alerts.yaml
-
-Remove k8s/alert/email-test.yaml after verifying email delivery. It fires permanently by design.
-Validation
-Each scenario below checks one behaviour. Run them in order and record what you observe.
-
-Scenario
-How to run
-Expected result
-Normal scaling
-kubectl apply -f k8s/load-generator.yaml and watch kubectl get hpa -n messaging -w
-Replicas rise during HEAVY and fall after the backlog clears
-Retry and DLQ
-The load generator's FAIL- tasks
-Retry logs appear, then Task ... sent to DLQ after 3 retries. Ledger shows failed
-Malformed message
-Publish a non-JSON body to tasks
-Sent to tasks.dlq immediately
-Worker crash
-kubectl delete pod -l app.kubernetes.io/name=task-worker during load
-No task is lost. Ledger count of processed plus failed matches published count once drained
-Database outage
-kubectl scale statefulset task-ledger-db -n messaging --replicas=0 for 2 minutes
-/readyz fails, messages wait in the queue, no data loss after recovery
-Broker restart
-kubectl rollout restart deployment rabbitmq -n messaging
-Workers reconnect, unacked messages are redelivered
-Alert firing
-Scale task-worker to 0
-TaskWorkerUnavailable fires after 2 minutes and an email is sent
-
-
-Verify the durable count:
-
-kubectl exec -n messaging statefulset/task-ledger-db -- \
-
-  psql -U "$POSTGRES_USER" -d taskledger \
-
-  -c "SELECT status, COUNT(*) FROM task_ledger GROUP BY status;"
-Operational runbook
-Symptom
-Likely cause
-Action
-RabbitMQHighQueueBacklog with replicas at maximum
-Processing slower than arrival, or a stuck consumer
-Check worker logs and processing histogram. Confirm unacked is not growing without bound
-TaskWorkerUnavailable
-Crash loop, failing probes, or DB or broker down
-kubectl describe pod, then kubectl logs --previous. Check /readyz status
-TaskWorkerProcessingFailures
-Bad input or a failing dependency
-Inspect ledger error_message for recent failed rows. Fix root cause before replaying
-DLQ not empty
-Permanent failures or malformed input
-Inspect with rabbitmqadmin get queue=tasks.dlq requeue=false. Fix, then replay
-Pods restart repeatedly
-Liveness stale heartbeat
-Check whether the consume loop is blocked. Review LIVENESS_STALE_SECONDS
-
-Known limitations
-These are documented deliberately. Each one is a known tradeoff or planned work.
-
-Single RabbitMQ replica. A broker restart pauses processing. Messages are persistent, so none are lost, but throughput stops during recovery. A clustered broker with quorum queues is the planned fix.
-Classic queues, not quorum queues. tasks and its companions use classic durable queues. Quorum queues would replicate messages across broker nodes.
-Duplicate concurrent execution is possible. claim_task prevents re-running a completed task, but two workers can process the same task at the same time if a redelivery overlaps. The system is at-least-once with idempotent completion, not exactly-once.
-One duplicate retry is possible. If recording the retry in the ledger fails after the retry copy is published, the original is requeued, so one extra retry copy can exist.
-No PodDisruptionBudget. Node drains can evict several workers at once.
-Simulated work. process_task is a 5-second sleep. Replace it with a real handler before using these patterns in production.
-Metrics reset on restart. Worker counters are per-process. Durable totals come from the ledger exporter.
-Local-only infrastructure. Minikube, local-path storage, and one node. No backup or restore for PostgreSQL.
-Roadmap
-Clustered RabbitMQ with quorum queues and PodDisruptionBudgets
-Lease-based task claims to remove concurrent duplicate execution
-Grafana dashboards committed as JSON
-PostgreSQL backups with a tested restore procedure
-CI pipeline: lint manifests, build and scan the image, run the validation scenarios in a kind cluster
-Chaos experiments, such as broker and database failures, with measured recovery times
-Repository layout
-keda-rabbitmq-project/
-
-├── README.md
-
-├── app/
-
-│   ├── worker.py               # Consumer, retry/DLQ logic, metrics, health endpoints
-
-│   ├── task_ledger.py          # PostgreSQL ledger: claim, record, count
-
-│   └── Dockerfile              # python:3.12-slim, non-root UID 10001
-
-└── k8s/
-
-    ├── namespace.yaml
-
-    ├── rabbitmq.yaml           # Broker Deployment, PVC, Service
-
-    ├── postgres.yaml           # Ledger StatefulSet and Services
-
-    ├── postgres-expoter.yaml   # Ledger exporter Deployment and Service
-
-    ├── ConfigMap/postgres-exporter.yaml   # Custom ledger queries
-
-    ├── worker.yaml             # task-worker Deployment
-
-    ├── task-worker-service.yaml
-
-    ├── keda-autoscaling.yaml   # TriggerAuthentication and ScaledObject
-
-    ├── load-generator.yaml     # Test traffic and forced failures
-
-    ├── secret/README.md        # How to create secrets outside Git
-
-    ├── alert/
-
-    │   ├── alerts.yaml         # PrometheusRule for messaging alerts
-
-    │   ├── alert-config.yaml   # Alertmanager email routing
-
-    │   └── email-test.yaml     # Temporary alert to verify email delivery
-
-    └── monitoring/             # ServiceMonitors for Prometheus
-Technology stack
-Kubernetes, Minikube, KEDA, Horizontal Pod Autoscaler, RabbitMQ 4.1, PostgreSQL 16, Python 3.12 with pika and psycopg2, prometheus-client, postgres-exporter, Prometheus Operator and Alertmanager (kube-prometheus-stack), Grafana, Docker.
-References
-KEDA RabbitMQ queue scaler
-RabbitMQ dead-letter exchanges
-RabbitMQ publisher confirms
-Kubernetes probes
-
-
-
-Author: Sadha19
+# 🚀 Event-Driven Autoscaling on Kubernetes with KEDA, RabbitMQ & Prometheus
+
+### SRE | Kubernetes | Observability | Reliability Engineering
+
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-Minikube-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
+[![KEDA](https://img.shields.io/badge/KEDA-Event--Driven%20Autoscaling-7B42BC)](https://keda.sh/)
+[![RabbitMQ](https://img.shields.io/badge/RabbitMQ-Message%20Broker-FF6600?logo=rabbitmq&logoColor=white)](https://www.rabbitmq.com/)
+[![Prometheus](https://img.shields.io/badge/Prometheus-Monitoring-E6522C?logo=prometheus&logoColor=white)](https://prometheus.io/)
+[![Grafana](https://img.shields.io/badge/Grafana-Observability-F46800?logo=grafana&logoColor=white)](https://grafana.com/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Durable%20Task%20Ledger-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+
+## 📌 Project Overview
+
+This project demonstrates how to build and monitor an event-driven, autoscaling worker system on Kubernetes.
+
+The system uses **RabbitMQ** as a message broker, **KEDA** to scale Kubernetes worker pods based on queue demand, **Prometheus** to collect metrics, **Grafana** to visualize system behavior, and **PostgreSQL** to maintain durable task records.
+
+The objective is to explore practical Site Reliability Engineering (SRE) concepts, including:
+
+- Event-driven autoscaling and workload management.
+- Monitoring incoming, processed, and failed tasks.
+- Observability through metrics and dashboards.
+- Alerting for operational issues.
+- Durable task accounting beyond individual pod lifetimes.
+- Troubleshooting distributed application workloads.
+
+This is a hands-on learning project developed and tested in a local Minikube environment.
+
+## 🎯 Project Goals
+
+The project focuses on answering real operational questions:
+
+- Can worker capacity increase automatically when message traffic grows?
+- Can the system scale down after the workload is processed?
+- How can we identify a growing queue backlog?
+- How can we measure processing throughput and failures?
+- How can we preserve task totals when Kubernetes replaces or deletes worker pods?
+- How can monitoring and alerts help identify potential reliability issues?
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart TD
+    A[Load Generator / Publisher]
+    B[RabbitMQ Message Queue]
+    C[KEDA Operator]
+    D[ScaledObject]
+    E[Worker Deployment]
+    F[(PostgreSQL Task Ledger)]
+    G[Worker Application Metrics]
+    H[RabbitMQ Metrics]
+    I[Prometheus]
+    J[Grafana Dashboards]
+    K[Prometheus Alert Rules]
+    L[Alertmanager]
+
+    A --> B
+    B --> E
+    C --> D
+    D --> E
+    E --> F
+    E --> G
+    B --> H
+    G --> I
+    H --> I
+    I --> J
+    I --> K
+    K --> L
+```
+
+### How It Works
+
+1. A publisher generates tasks and sends them to the RabbitMQ queue.
+2. RabbitMQ buffers messages until workers are ready to process them.
+3. KEDA monitors the configured queue metric and adjusts the worker replica count through Kubernetes autoscaling.
+4. Worker pods consume messages and record task outcomes.
+5. PostgreSQL stores task-level records for durable accounting.
+6. Prometheus collects application and RabbitMQ metrics.
+7. Grafana visualizes workload activity, processing throughput, and system behavior.
+8. Prometheus alert rules and Alertmanager provide an alerting workflow for configured operational conditions.
+
+## 🛠️ Technology Stack
+
+| Technology | Purpose |
+|---|---|
+| Kubernetes | Container orchestration |
+| Minikube | Local Kubernetes development and testing |
+| KEDA | Event-driven workload autoscaling |
+| RabbitMQ | Message queuing and asynchronous communication |
+| Python | Worker application and workload generation |
+| Docker | Container image creation and packaging |
+| Prometheus | Metrics collection and querying |
+| Grafana | Monitoring dashboards and visualization |
+| Prometheus Operator | Management of monitoring resources |
+| Alertmanager | Alert grouping, routing, and notification integration |
+| PostgreSQL | Persistent task records and status tracking |
+| kubectl | Kubernetes resource management |
+
+## ⚙️ Key Features
+
+### 1. Event-Driven Autoscaling with KEDA
+
+The worker application scales according to message queue demand rather than relying exclusively on CPU utilization.
+
+Key areas explored:
+
+- KEDA ScaledObjects and RabbitMQ scaling configuration.
+- Kubernetes Horizontal Pod Autoscaler integration.
+- Automatic scale-out during workload spikes.
+- Scale-in after demand decreases.
+- Minimum and maximum replica configuration.
+- Validation using `kubectl get hpa` and `kubectl get scaledobjects`.
+
+Example validation:
+
+```bash
+kubectl get scaledobjects -n messaging
+kubectl describe scaledobject -n messaging <scaledobject-name>
+kubectl get hpa -n messaging
+kubectl get deployment task-worker -n messaging -w
+```
+
+**Expected result:** worker replicas increase when the configured scaling conditions are met and can decrease when demand subsides, subject to the KEDA and HPA configuration.
+
+### 2. RabbitMQ Message Processing
+
+RabbitMQ decouples task publishing from task execution.
+
+This helps demonstrate:
+
+- Asynchronous task processing.
+- Queue-based workload buffering.
+- Producer and consumer separation.
+- Message acknowledgements.
+- Processing failures and retries.
+- Queue backlog monitoring.
+
+RabbitMQ metrics help investigate whether tasks are being published, delivered, acknowledged, or accumulating in the queue.
+
+### 3. Prometheus Monitoring
+
+Prometheus collects metrics from the worker application and RabbitMQ.
+
+Application-level metrics include:
+
+- `worker_messages_received_total`
+- `worker_messages_processed_total`
+- `worker_messages_failed_total`
+
+RabbitMQ metrics can provide additional information about published messages, acknowledged messages, and queue activity.
+
+Metric availability depends on the exporter and configuration. Verify exact names in the Prometheus expression browser.
+
+### 4. Grafana Dashboards
+
+Grafana provides a visual view of application and messaging behavior.
+
+The monitoring workflow can be used to investigate:
+
+- Incoming task activity.
+- Successfully processed tasks.
+- Failed tasks.
+- Processing throughput over time.
+- RabbitMQ message activity.
+- Worker scaling behavior.
+- Potential differences between incoming and processed workload.
+
+The aim is to make system behavior easier to understand during normal operation and workload spikes.
+
+### 5. Durable Task Accounting with PostgreSQL
+
+Prometheus counters are useful for monitoring, but they should not be treated as a permanent business ledger.
+
+When a worker pod is deleted, its individual counter series may disappear or become unavailable. Counter resets, scrape gaps, and retention limits can also affect historical queries.
+
+To address this limitation, the project uses PostgreSQL to maintain task-level records and outcomes.
+
+The ledger can support queries for:
+
+- Total recorded tasks.
+- Successfully processed tasks.
+- Failed tasks.
+- Pending or in-progress tasks.
+
+For reliable totals, task records should use unique task IDs, appropriate database constraints, and idempotent update logic.
+
+**Design principle:** use Prometheus for observability and PostgreSQL for durable task accounting.
+
+### 6. Prometheus Alerting
+
+The project also explores Prometheus alert rules and Alertmanager integration.
+
+Potential alert scenarios include:
+
+- Worker replica count exceeding an expected threshold.
+- RabbitMQ queue backlog remaining elevated.
+- Processing failures increasing.
+- Worker processing activity stopping unexpectedly.
+- Monitoring targets becoming unavailable.
+
+Alert thresholds should be tuned to the workload. A high replica count or queue depth is a signal to investigate, not necessarily an incident on its own.
+
+## 📊 Useful PromQL Queries
+
+Run these queries in Prometheus after confirming that the corresponding metrics exist.
+
+### Total messages received
+
+```promql
+sum(worker_messages_received_total)
+```
+
+### Total messages processed
+
+```promql
+sum(worker_messages_processed_total)
+```
+
+### Total failed messages
+
+```promql
+sum(worker_messages_failed_total)
+```
+
+### Incoming message rate
+
+```promql
+sum(rate(worker_messages_received_total[5m]))
+```
+
+### Successful processing rate
+
+```promql
+sum(rate(worker_messages_processed_total[5m]))
+```
+
+### Failure rate
+
+```promql
+sum(rate(worker_messages_failed_total[5m]))
+```
+
+### Incoming versus processed rate difference
+
+```promql
+sum(rate(worker_messages_received_total[5m]))
+-
+sum(rate(worker_messages_processed_total[5m]))
+```
+
+This query compares rates; it does not directly measure the RabbitMQ queue backlog. For the actual backlog, use the appropriate RabbitMQ ready-message metric.
+
+### RabbitMQ acknowledged messages
+
+If this metric and label set exist in your installation:
+
+```promql
+sum(rabbitmq_queue_messages_acked_total{namespace="messaging"})
+```
+
+**Important:** these Prometheus queries are useful for trends and operational monitoring. For durable all-time totals across deleted pods, query the PostgreSQL task ledger instead.
+
+## 🧪 Testing and Validation
+
+The project can be validated using a gradual workload rather than publishing every task at once.
+
+### Test 1: Baseline
+
+Check the initial state:
+
+```bash
+kubectl get pods -n messaging
+kubectl get deployment task-worker -n messaging
+kubectl get hpa -n messaging
+kubectl get scaledobjects -n messaging
+```
+
+Record the initial replica count and queue depth.
+
+### Test 2: Generate workload
+
+Run the project's load generator and publish tasks gradually.
+
+Observe the worker replica count:
+
+```bash
+kubectl get deployment task-worker -n messaging -w
+```
+
+Also monitor queue activity and worker processing metrics in Prometheus.
+
+### Test 3: Observe scale-out
+
+Confirm that the queue scaling trigger responds to demand and that worker replicas increase within configured limits.
+
+### Test 4: Observe scale-in
+
+Stop publishing new tasks and allow the queue to drain.
+
+Check whether replicas decrease according to the configured cooldown and scaling behavior.
+
+### Test 5: Validate task totals
+
+Compare application metrics with the durable PostgreSQL task records.
+
+Investigate discrepancies by checking retries, duplicate deliveries, task IDs, acknowledgement behavior, and failure handling.
+
+### Test 6: Validate alerts
+
+Confirm that Prometheus loads the intended alert rules and that Alertmanager receives alerts when their conditions are met.
+
+## 🔍 Troubleshooting
+
+| Problem | Investigation |
+|---|---|
+| Worker replicas do not increase | Inspect the ScaledObject, HPA conditions, KEDA logs, queue metrics, and authentication configuration |
+| RabbitMQ pod restarts | Review pod events, logs, readiness/liveness probes, resource limits, and available memory |
+| Worker image pull fails | Verify image tag, registry access, image pull secret, and TLS configuration |
+| Prometheus metrics are missing | Check target health, ServiceMonitor selectors, service labels, and scrape configuration |
+| Grafana panels show no data | Run the PromQL query directly in Prometheus and verify labels and time range |
+| Task totals differ from metrics | Compare unique task IDs, ledger statuses, retries, and acknowledgement behavior |
+| Alerts do not fire | Inspect PrometheusRule selection, rule evaluation, threshold, duration, and Alertmanager routing |
+
+Useful commands:
+
+```bash
+kubectl get events -n messaging --sort-by=.lastTimestamp
+kubectl get pods -n messaging
+kubectl logs -n messaging <pod-name>
+kubectl describe pod -n messaging <pod-name>
+kubectl get servicemonitors -A
+kubectl get prometheusrules -A
+```
+
+## 🔐 Reliability and Security Considerations
+
+This project also provides an opportunity to practice important SRE principles:
+
+- Use Kubernetes Secrets or a suitable secret manager for credentials.
+- Avoid committing passwords, tokens, or private configuration to Git.
+- Configure appropriate resource requests and limits.
+- Use readiness and liveness probes that reflect actual application health.
+- Make task processing idempotent.
+- Define clear retry, acknowledgement, and dead-letter behavior.
+- Monitor queue depth, processing rate, failures, and processing latency.
+- Use database constraints to protect task accounting from duplicate records.
+- Plan persistent storage, backups, recovery testing, TLS, and access control before production deployment.
+
+The current project is a local Minikube learning environment. It does not claim production-grade high availability or a measured service-level objective (SLO).
+
+## 📚 What I Learned
+
+Through this project, I explored:
+
+- Event-driven autoscaling using KEDA and RabbitMQ.
+- Kubernetes Deployments, HPA behavior, and scaling validation.
+- Application observability using Prometheus and Grafana.
+- PromQL queries for rates, counters, and workload analysis.
+- Prometheus alert rules and Alertmanager workflows.
+- Durable task accounting using PostgreSQL.
+- Troubleshooting Kubernetes workloads and monitoring integrations.
+- The difference between application metrics and durable business records.
+- Reliability concerns around retries, duplicate delivery, failures, and queue backlogs.
+
+## 🚀 Future Improvements
+
+- Add automated tests for worker restarts and duplicate message delivery.
+- Define SLOs for task success rate and processing latency.
+- Add alerts for sustained queue growth and lack of processing progress.
+- Test RabbitMQ and PostgreSQL recovery and backup restoration.
+- Add CI checks for Kubernetes manifests, image vulnerabilities, and secret leaks.
+- Expand testing to a multi-node or managed Kubernetes cluster.
+- Document resource sizing and scaling behavior under different workloads.
+
+## 📖 References
+
+- [KEDA Documentation](https://keda.sh/docs/latest/)
+- [KEDA RabbitMQ Queue Scaler](https://keda.sh/docs/latest/scalers/rabbitmq-queue/)
+- [Kubernetes Documentation](https://kubernetes.io/docs/)
+- [Prometheus Documentation](https://prometheus.io/docs/)
+- [Grafana Documentation](https://grafana.com/docs/)
+- [RabbitMQ Documentation](https://www.rabbitmq.com/docs)
+- [PostgreSQL Documentation](https://www.postgresql.org/docs/)
+
+## 👨‍💻 Author
+
+Built as a hands-on project to strengthen my skills in **Kubernetes, SRE, DevOps, observability, and platform engineering**.
+
+Feedback and suggestions are welcome!
+
+If you find this project useful, please ⭐ the repository.
