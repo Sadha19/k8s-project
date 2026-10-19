@@ -26,6 +26,9 @@ The objective is to explore practical Site Reliability Engineering (SRE) concept
 
 This is a hands-on learning project developed and tested in a local Minikube environment.
 
+<img width="1024" height="1024" alt="Gemini_Generated_Image_8tzazx8tzazx8tza" src="https://github.com/user-attachments/assets/82fe4181-2072-4deb-9f94-9f8ab9ab6015" />
+
+
 ## 🎯 Project Goals
 
 The project focuses on answering real operational questions:
