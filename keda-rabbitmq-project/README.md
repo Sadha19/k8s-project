@@ -285,7 +285,10 @@ Observe the worker replica count:
 
 ```bash
 kubectl get deployment task-worker -n messaging -w
+kubectl get hpa -n messaging -w keda-hpa-task-worker-scaler
 ```
+<img width="959" height="470" alt="Screenshot 2026-10-17 204548" src="https://github.com/user-attachments/assets/a04b5fe9-4bb8-4232-9c08-82fb4e88fe8f" />
+<img width="959" height="535" alt="Screenshot 2026-10-18 192937" src="https://github.com/user-attachments/assets/b5b8513f-8b0b-4ec1-a3f9-645bfb22a279" />
 
 Also monitor queue activity and worker processing metrics in Prometheus.
 
@@ -308,6 +311,8 @@ Investigate discrepancies by checking retries, duplicate deliveries, task IDs, a
 ### Test 6: Validate alerts
 
 Confirm that Prometheus loads the intended alert rules and that Alertmanager receives alerts when their conditions are met.
+
+<img width="768" height="59" alt="Screenshot 2026-10-19 111440" src="https://github.com/user-attachments/assets/07592786-8e1f-4024-8c99-aeb42cb9c153" />
 
 ## 🔍 Troubleshooting
 
@@ -364,7 +369,6 @@ Through this project, I explored:
 
 ## 🚀 Future Improvements
 
-- Add automated tests for worker restarts and duplicate message delivery.
 - Define SLOs for task success rate and processing latency.
 - Add alerts for sustained queue growth and lack of processing progress.
 - Test RabbitMQ and PostgreSQL recovery and backup restoration.
