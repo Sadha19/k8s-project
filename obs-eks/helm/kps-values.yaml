@@ -1,0 +1,67 @@
+fullnameOverride: kps
+
+prometheus:
+  serviceAccount:
+    create: true
+    name: prometheus-sa
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::925931509084:role/eksctl-obs-eks-addon-iamserviceaccount-monito-Role1-mPQJFsgq3EeG
+  thanosService:
+    enabled: true
+  thanosServiceMonitor:
+    enabled: true
+
+  prometheusSpec:
+    replicas: 2
+    replicaExternalLabelName: prometheus_replica
+    externalLabels:
+      cluster: obs-eks
+    retention: 2d
+    disableCompaction: true
+    podAntiAffinity: hard
+    thanos:
+      image: quay.io/thanos/thanos:v0.38.0
+      objectStorageConfig:
+        existingSecret:
+          name: thanos-objstore-config
+          key: objstore.yml
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+
+# EKS manages these control-plane components and does not expose their metrics endpoints,
+# so scraping them only produces "target down" noise. Disable them.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+grafana:
+  adminPassword: change-me-now
+  sidecar:
+    datasources:
+      defaultDatasourceEnabled: false
+  additionalDataSources:
+    - name: Thanos
+      type: prometheus
+      url: http://thanos-query.monitoring.svc.cluster.local:10902
+      access: proxy
+      isDefault: true
+
+alertmanager:
+  enabled: true
+
+nodeExporter:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: true

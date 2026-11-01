@@ -1,0 +1,73 @@
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: thanos-compactor
+  namespace: monitoring
+spec:
+  serviceName: thanos-compactor
+  replicas: 1                    # MUST stay at 1
+  selector:
+    matchLabels:
+      app: thanos-compactor
+  template:
+    metadata:
+      labels:
+        app: thanos-compactor
+    spec:
+      serviceAccountName: thanos-sa
+      securityContext:
+        fsGroup: 65534
+        runAsUser: 65534
+        runAsNonRoot: true
+      containers:
+        - name: compactor
+          image: quay.io/thanos/thanos:v0.38.0
+          args:
+            - compact
+            - --wait
+            - --data-dir=/data
+            - --objstore.config-file=/etc/thanos/objstore.yml
+            - --http-address=0.0.0.0:10902
+            - --retention.resolution-raw=30d
+            - --retention.resolution-5m=90d
+            - --retention.resolution-1h=365d
+            - --delete-delay=48h
+          ports:
+            - name: http
+              containerPort: 10902
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: objstore
+              mountPath: /etc/thanos
+              readOnly: true
+      volumes:
+        - name: objstore
+          secret:
+            secretName: thanos-objstore-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources:
+          requests:
+            storage: 50Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-compactor
+  namespace: monitoring
+  labels:
+    app: thanos-compactor
+spec:
+  clusterIP: None
+  selector:
+    app: thanos-compactor
+  ports:
+    - name: http
+      port: 10902
+      targetPort: 10902

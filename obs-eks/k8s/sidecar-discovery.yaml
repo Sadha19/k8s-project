@@ -1,0 +1,14 @@
+# k8s/sidecar-discovery.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-sidecar-grpc
+  namespace: monitoring
+spec:
+  clusterIP: None                 # headless: DNS returns one SRV record per pod
+  selector:
+    prometheus: kps-prometheus
+  ports:
+    - name: grpc
+      port: 10901
+      targetPort: 10901

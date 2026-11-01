@@ -1,0 +1,40 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: obs-eks
+  region: ap-south-1
+  version: "1.37"          # replace with the newest version from describe-cluster-versions
+
+iam:
+  withOIDC: true           # required for IRSA
+
+autoModeConfig:
+  enabled: false
+    
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+  - name: metrics-server
+  - name: aws-ebs-csi-driver
+    wellKnownPolicies:
+      ebsCSIController: true
+
+managedNodeGroups:
+  - name: ng-general
+    spot: true
+    instanceTypes: ["m5.large", "m5a.large", "m6i.large", "m4.large"]
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 3
+    volumeSize: 30
+    privateNetworking: true
+    labels:
+      role: general
+    iam:
+      withAddonPolicies:
+        ebs: true
+vpc:
+  nat:
+    gateway: Single

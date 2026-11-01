@@ -1,0 +1,59 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: thanos-pipeline
+  namespace: monitoring
+  labels:
+    release: kps
+spec:
+  groups:
+    - name: thanos-pipeline
+      rules:
+        - alert: ThanosQueryDown
+          expr: (sum(up{job="thanos-query"}) or vector(0)) < 1
+          for: 3m
+          labels: {severity: critical}
+          annotations:
+            summary: "All Thanos Query replicas are down, Grafana has no data"
+
+        - alert: ThanosStoreGatewayDown
+          expr: (sum(up{job="thanos-store-gateway"}) or vector(0)) < 1
+          for: 3m
+          labels: {severity: critical}
+          annotations:
+            summary: "Store Gateway is down, historical queries will fail"
+
+        - alert: ThanosCompactorDown
+          expr: (sum(up{job="thanos-compactor"}) or vector(0)) < 1
+          for: 35m
+          labels: {severity: warning}
+          annotations:
+            summary: "Compactor is down, blocks will accumulate uncompacted"
+
+        - alert: ThanosSidecarDown
+          expr: up{job="kps-thanos-discovery"} == 0
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: "Thanos sidecar on {{ $labels.pod }} is not being scraped"
+
+        - alert: ThanosShipperUploadFailures
+          expr: increase(thanos_shipper_upload_failures_total[30m]) > 0
+          for: 2m
+          labels: {severity: critical}
+          annotations:
+            summary: "Sidecar on {{ $labels.pod }} is failing to upload blocks to S3"
+
+        - alert: ThanosObjstoreFailures
+          expr: increase(thanos_objstore_bucket_operation_failures_total[15m]) > 0
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: "Thanos is failing to read or write S3"
+
+        - alert: PrometheusReplicaDown
+          expr: (count(up{job="kps-prometheus"} == 1) or vector(0)) < 2
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: "Fewer than two Prometheus replicas are healthy"
