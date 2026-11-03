@@ -1,4 +1,4 @@
-# Kubernetes Metrics Pipeline on AWS EKS
+# 🚀 Kubernetes Metrics Pipeline on AWS EKS
 
 A highly available, long-retention metrics platform on Amazon EKS. Two Prometheus replicas scrape the same targets, Thanos provides a unified query layer and long-term storage in Amazon S3, and Grafana visualizes everything through a single endpoint.
 
