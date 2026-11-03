@@ -617,7 +617,7 @@ Add screenshots to `docs/` and link them here: the loaded blocks page, the dedup
 
 ## Cost
 
-Estimated cost in `ap-south-1` while running: about $5 to $6 per day with two Spot worker nodes, one NAT gateway, and about 80 GB of gp3 storage. The EKS control plane is the largest fixed cost. A full build and test session costs a few dollars. Keep the S3 bucket, which costs very little to hold.
+Estimated cost in `ap-south-1` while running: about $1 to $2 around 6 to 7 hours with two Spot worker nodes, one NAT gateway, and about 80 GB of gp3 storage. The EKS control plane is the largest fixed cost. A full build and test session costs a few dollars. Keep the S3 bucket, which costs very little to hold.
 
 ---
 
