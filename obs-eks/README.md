@@ -48,48 +48,8 @@ This project solves all four by separating **collection** (Prometheus), **storag
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph Apps["Services exposing /metrics"]
-        A1[podinfo pods]
-        A2[node-exporter]
-        A3[kube-state-metrics]
-    end
+![Uploading Untitled Diagram.drawio.png…]()
 
-    subgraph Collect["Collection (HA pair)"]
-        P0[Prometheus replica 0]
-        P1[Prometheus replica 1]
-        S0[Thanos sidecar]
-        S1[Thanos sidecar]
-        P0 --- S0
-        P1 --- S1
-    end
-
-    A1 & A2 & A3 -->|scrape every 30s| P0
-    A1 & A2 & A3 -->|scrape every 30s| P1
-
-    subgraph Storage["Long-term storage"]
-        S3[(Amazon S3<br/>2h blocks)]
-        SG[Thanos Store Gateway]
-        C[Thanos Compactor<br/>merge, downsample, retention]
-    end
-
-    S0 -->|upload blocks| S3
-    S1 -->|upload blocks| S3
-    S3 --> SG
-    S3 --> C
-
-    subgraph Query["Query layer"]
-        Q[Thanos Query<br/>deduplicates replicas]
-    end
-
-    S0 -->|live data| Q
-    S1 -->|live data| Q
-    SG -->|historical data| Q
-    Q --> G[Grafana dashboards]
-
-    P0 & P1 -.->|alerts| AM[Alertmanager]
-```
 
 ### Data flow
 
