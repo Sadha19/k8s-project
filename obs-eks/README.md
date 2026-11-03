@@ -47,8 +47,9 @@ This project solves all four by separating **collection** (Prometheus), **storag
 ---
 
 ## Architecture
+<img width="1384" height="824" alt="Untitled Diagram drawio" src="https://github.com/user-attachments/assets/640abee0-b47c-4b60-aa17-67302b879f65" />
 
-![Uploading Untitled Diagram.drawio.png…]()
+
 
 
 ### Data flow
