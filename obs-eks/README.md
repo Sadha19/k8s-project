@@ -5,10 +5,13 @@ A highly available, long-retention metrics platform on Amazon EKS. Two Prometheu
 Built as an SRE portfolio project to demonstrate production-style observability: HA monitoring, durable long-term storage, least-privilege AWS access, and verified failure recovery.
 
 ---
-[![Kubernetes](https://img.shields.io/badge/Kubernetes-Minikube-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
-[![Prometheus](https://img.shields.io/badge/Prometheus-Monitoring-E6522C?logo=prometheus&logoColor=white)](https://prometheus.io/)
-[![Grafana](https://img.shields.io/badge/Grafana-Observability-F46800?logo=grafana&logoColor=white)](https://grafana.com/)
-![AWS](https://img.shields.io/badge/AWS-%23FF9900.svg?style=flat&logo=amazon-web-services&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-1.37-326CE5?logo=kubernetes&logoColor=white)
+![AWS EKS](https://img.shields.io/badge/AWS-EKS-FF9900?logo=amazonaws&logoColor=white)
+![Prometheus](https://img.shields.io/badge/Prometheus-HA%20x2-E6522C?logo=prometheus&logoColor=white)
+![Thanos](https://img.shields.io/badge/Thanos-v0.38.0-7B3FE4)
+![Grafana](https://img.shields.io/badge/Grafana-dashboards-F46800?logo=grafana&logoColor=white)
+![S3](https://img.shields.io/badge/Amazon%20S3-long--term%20storage-569A31?logo=amazons3&logoColor=white)
+![Helm](https://img.shields.io/badge/Helm-kube--prometheus--stack-0F1689?logo=helm&logoColor=white)
 
 ## Table of contents
 
